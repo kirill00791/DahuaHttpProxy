@@ -7,6 +7,7 @@
 - Получение записей об открытии дверей (`/api/getOpenDoorRecords`) с фильтрацией по времени и номеру карты.
 - Получение списка всех карт доступа на устройстве (`/api/getAllUserCards`) с информацией о пользователях.
 - Добавление новой карты доступа на устройство (`/api/addNewUserCard`) с указанием параметров доступа.
+- Удаление карты доступа с устройства (`/api/removeUserCard`).
 
 ## Требования
 
@@ -80,7 +81,7 @@ waitress-serve --host=0.0.0.0 --port=8080 DahuaHttpProxy:DahuaHttpProxy:app
 {
   "startTime": "2026-03-01 00:00:00",
   "endTime": "2026-03-30 23:59:59",
-  "cardNo": "123456"
+  "cardNo": "02908E73"
 }
 ```
 
@@ -95,7 +96,20 @@ waitress-serve --host=0.0.0.0 --port=8080 DahuaHttpProxy:DahuaHttpProxy:app
 **Endpoint:** `GET /api/getAllUserCards`
 
 **Ответ:**
-JSON-объект с полями `success`, `count` и массивом `cards`, содержащим информацию о каждой карте доступа. Подробный пример ответа см. в файле `POSTMAN_EXAMPLE.md`.
+JSON-объект с полями:
+- `success` (boolean) – успешность выполнения запроса
+- `count` (integer) – количество карт в ответе
+- `cards` (array) – массив объектов, каждый из которых содержит полную информацию о карте доступа
+
+**Поля карты доступа:**
+- `UserType`, `CardType`, `CardStatus`, `UserID`, `RecNo`, `UseTime` – числовые значения
+- `Handicap`, `FirstEnter`, `IsValid` – булевы значения
+- `CardName`, `CardNo`, `CitizenIDNo`, `DynamicCheckCode`, `Password`, `VTOPosition` – строки
+- `Doors`, `TimeSections` – массивы целых чисел (могут отсутствовать)
+- `ValidDateStart`, `ValidDateEnd` – строки с датами или пустые строки
+- `RepeatEnterRouteTimeout` – большое целое число (например, 4294967295)
+
+Подробный пример ответа с актуальной структурой см. в файле `POSTMAN_EXAMPLE.md`.
 
 ### Добавление новой карты доступа
 **Endpoint:** `POST /api/addNewUserCard`
@@ -105,7 +119,7 @@ JSON-объект с полями `success`, `count` и массивом `cards`
 {
     "card_name": "Иван Иванов",
     "card_no": "02908E73",
-    "user_id": "1001",
+    "user_id": "5",
     "card_status": 0,
     "card_type": 0,
     "password": "",
@@ -119,15 +133,37 @@ JSON-объект с полями `success`, `count` и массивом `cards`
 ```
 
 **Параметры:**
-- `card_name`, `card_no`, `user_id` – обязательные поля.
+- `card_name`, `card_no` (уникальное!), `user_id`(уникальное!) – обязательные поля.
 - `card_no` должен быть 8-значной строкой с 16-ричным HEX номером RFID карты (например, "02908E73").
 - Остальные параметры опциональны.
 
 **Ответ:**
-Зависит от устройства Dahua, обычно `{"result": "OK", "status_code": 200}`.
+Зависит от устройства Dahua, обычно `{"RecNo": "5", "status_code": 200}`.
 
-### Другие эндпоинты
-Сервер также предоставляет эндпоинты для управления пользователями веб-интерфейса, группами пользователей и картами доступа. Полный список с примерами запросов и ответов см. в файле `POSTMAN_EXAMPLE.md`.
+### Удаление карты доступа
+**Endpoint:** `POST /api/removeUserCard`
+
+**Тело запроса (JSON):**
+```json
+{
+    "card_no": "02908E73",
+    "recno": 5
+}
+```
+
+**Параметры:**
+- `card_no` – обязательный параметр.
+- `recno` – опциональный параметр, номер записи в базе данных.
+
+**Ответ:**
+```json
+{
+    "message": "Card 02908E73 (RecNo=5) deleted successfully",
+    "recno": "5",
+    "success": true
+}
+```
+
 
 ## Архитектура и улучшения
 

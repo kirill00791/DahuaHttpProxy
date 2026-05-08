@@ -162,10 +162,98 @@ def enroll_new_user():
 
 # =================================================================
 
+@app.route('/api/removeUserCard', methods=['POST'])
+def delete_card():
+    if not request.is_json:
+        return jsonify({'error': 'JSON required'}), 400
+
+    data = request.get_json()
+    card_no = data.get('card_no')
+
+    if not card_no:
+        return jsonify({'error': 'card_no is required'}), 400
+
+    try:
+        dahua = get_dahua_client()
+        base_url = dahua.base_url
+        auth = HTTPDigestAuth(DAHUA_USERNAME, DAHUA_PASSWORD)
+
+        # Шаг 1: Поиск RecNo
+        search_url = f"{base_url}recordFinder.cgi"
+        search_params = {
+            "action": "find",
+            "name": "AccessControlCard",
+            "CardNo": card_no
+        }
+        
+        logger.info(f'Ищем карту {card_no}')
+        search_response = requests.get(
+            search_url, 
+            params=search_params, 
+            auth=auth, 
+            timeout=10
+        )
+        
+        if search_response.status_code != 200:
+            logger.error(f'Ошибка поиска: {search_response.text}')
+            return jsonify({'error': 'Search failed', 'details': search_response.text}), 500
+
+        # Парсим RecNo
+        import re
+        # Ищем конкретную запись с картой
+        pattern = rf'CardNo={re.escape(card_no)}\b.*?RecNo=(\d+)'
+        match = re.search(pattern, search_response.text, re.DOTALL)
+        
+        if not match:
+            logger.warning(f'Карта {card_no} не найдена в ответе')
+            return jsonify({'error': f'Card {card_no} not found'}), 404
+            
+        recno = match.group(1)
+        logger.info(f'Найден RecNo={recno} для карты {card_no}')
+
+        # Шаг 2: Удаление по RecNo
+        delete_url = f"{base_url}recordUpdater.cgi"
+        delete_params = {
+            "action": "remove",
+            "name": "AccessControlCard",
+            "recno": recno
+        }
+        
+        logger.info(f'Удаляем карту с параметрами: {delete_params}')
+        delete_response = requests.get(
+            delete_url,
+            params=delete_params,
+            auth=auth,
+            timeout=10
+        )
+        
+        logger.info(f'Ответ на удаление: status={delete_response.status_code}, body={delete_response.text}')
+        
+        if delete_response.status_code == 200 and 'Error' not in delete_response.text:
+            logger.info(f'Карта {card_no} успешно удалена')
+            return jsonify({
+                'success': True,
+                'message': f'Card {card_no} (RecNo={recno}) deleted successfully',
+                'recno': recno
+            })
+        else:
+            logger.error(f'Ошибка удаления: {delete_response.text}')
+            return jsonify({
+                'error': 'Deletion failed',
+                'details': delete_response.text,
+                'recno': recno
+            }), 500
+
+    except Exception as e:
+        logger.error(f'Исключение: {e}', exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+# =================================================================
+
 @app.route('/api/getAllUserCards', methods=['GET'])
 def api_get_all_cards():
     """
-    GET /api/getUserCardList
+    GET /api/getAllUserCards
     Возвращает JSON-список всех карт с пользователями.
     """
     try:
@@ -215,58 +303,72 @@ def parse_card_records(raw_text: str) -> List[Dict]:
     """
     Парсит сырой ответ от recordFinder.cgi в список словарей.
     """
-    cards = []
+    # Нормализуем разделители строк: заменяем \r\ на \r\n
+    normalized = raw_text.replace('\r\\', '\r\n')
+    lines = normalized.strip().split('\r\n')
     
-    # Находим все записи (пустые строки разделяют карты)
-    # Каждая карта начинается с records[N]. и содержит поля до следующей записи
-    
-    # Удаляем первую строку "found=X"
-    lines = raw_text.strip().split('\r\n')
-    
-    # Группируем строки по записям
-    current_record = {}
-    current_index = -1
+    # Словарь для группировки записей по индексу
+    records_by_index = {}
     
     for line in lines:
-        # Пропускаем первую строку с found=X
-        if line.startswith('found='):
+        line = line.strip()
+        if not line:
             continue
             
-        # Проверяем, начинается ли новая запись
+        # Пропускаем строку с found
+        if line.startswith('found='):
+            continue
+        
+        # Некоторые строки могут содержать лишние символы перед records (например, 'nrecords')
+        # Ищем позицию подстроки 'records[' в строке
+        records_pos = line.find('records[')
+        if records_pos == -1:
+            continue
+        
+        # Обрезаем лишнее перед records
+        line = line[records_pos:]
+        
+        # Ищем паттерн records[индекс].поле=значение
         match = re.match(r'records\[(\d+)\]\.(.+)', line)
-        if match:
-            index = int(match.group(1))
-            field_value = match.group(2)
+        if not match:
+            continue
             
-            # Если индекс изменился - сохраняем предыдущую запись
-            if index != current_index and current_record:
-                cards.append(current_record)
-                current_record = {}
-                current_index = index
-            
-            # Парсим поле=значение
-            if '=' in field_value:
-                field, value = field_value.split('=', 1)
-                current_record[field] = value
+        index = int(match.group(1))
+        rest = match.group(2)
+        
+        # Инициализируем запись, если еще нет
+        if index not in records_by_index:
+            records_by_index[index] = {}
+        
+        # Обрабатываем поле=значение
+        if '=' in rest:
+            # Проверяем, является ли поле массивом (например, Doors[0]=0)
+            array_match = re.match(r'(\w+)\[(\d+)\]=(.+)', rest)
+            if array_match:
+                array_name = array_match.group(1)
+                array_index = int(array_match.group(2))
+                array_value = array_match.group(3)
+                
+                # Создаем список для массива, если еще нет
+                if array_name not in records_by_index[index]:
+                    records_by_index[index][array_name] = []
+                
+                # Увеличиваем список до нужного размера
+                while len(records_by_index[index][array_name]) <= array_index:
+                    records_by_index[index][array_name].append(None)
+                
+                records_by_index[index][array_name][array_index] = array_value
             else:
-                # Для массивов, например Doors[0]=1
-                array_match = re.match(r'(\w+)\[(\d+)\]=(.+)', field_value)
-                if array_match:
-                    array_name = array_match.group(1)
-                    array_index = array_match.group(2)
-                    array_value = array_match.group(3)
-                    
-                    if array_name not in current_record:
-                        current_record[array_name] = {}
-                    current_record[array_name][array_index] = array_value
+                # Обычное поле
+                field, value = rest.split('=', 1)
+                records_by_index[index][field] = value
     
-    # Добавляем последнюю запись
-    if current_record:
-        cards.append(current_record)
-    
-    # Преобразуем типы для удобства
-    for card in cards:
-        # Преобразуем строковые значения в подходящие типы
+    # Преобразуем словарь в список, сортируя по индексу
+    cards = []
+    for idx in sorted(records_by_index.keys()):
+        card = records_by_index[idx]
+        
+        # Преобразуем типы
         if 'RecNo' in card:
             card['RecNo'] = int(card['RecNo'])
         if 'UserID' in card:
@@ -275,18 +377,38 @@ def parse_card_records(raw_text: str) -> List[Dict]:
             card['CardStatus'] = int(card['CardStatus'])
         if 'CardType' in card:
             card['CardType'] = int(card['CardType'])
-        
-        # Преобразуем массивы Doors в списки
-        if 'Doors' in card and isinstance(card['Doors'], dict):
-            card['Doors'] = [int(card['Doors'][k]) for k in sorted(card['Doors'].keys())]
+        if 'UserType' in card:
+            card['UserType'] = int(card['UserType'])
+        if 'UseTime' in card:
+            card['UseTime'] = int(card['UseTime'])
+        if 'RepeatEnterRouteTimeout' in card:
+            try:
+                card['RepeatEnterRouteTimeout'] = int(card['RepeatEnterRouteTimeout'])
+            except:
+                pass
         
         # Преобразуем булевы значения
         for bool_field in ['Handicap', 'FirstEnter', 'IsValid']:
             if bool_field in card:
                 card[bool_field] = card[bool_field].lower() == 'true'
+        
+        # Обрабатываем массивы: преобразуем значения в int и удаляем None
+        for array_field in ['Doors', 'TimeSections']:
+            if array_field in card and isinstance(card[array_field], list):
+                # Фильтруем None и преобразуем в int
+                filtered = []
+                for val in card[array_field]:
+                    if val is not None:
+                        try:
+                            filtered.append(int(val))
+                        except:
+                            filtered.append(val)
+                card[array_field] = filtered
+        
+        cards.append(card)
     
     return cards
-
+    
 # =================================================================
 
 @app.route('/health', methods=['GET'])

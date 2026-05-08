@@ -37,7 +37,7 @@ GET http://localhost:8080/health
 {
   "startTime": "2026-03-01 00:00:00",
   "endTime": "2026-03-30 23:59:59",
-  "cardNo": "123456"
+  "cardNo": "0087D4B7"
 }
 ```
 
@@ -273,9 +273,9 @@ GET http://localhost:8080/health
 }
 ```
 
-## 9. Регистрация нового пользователя с картой доступа (enroll_new_user)
+## 9. Регистрация нового пользователя с картой доступа (addNewUserCard)
 **Метод:** POST
-**Эндпоинт:** `/api/enroll_new_user`
+**Эндпоинт:** `/api/addNewUserCard`
 **Заголовки:**
 - `Content-Type: application/json`
 
@@ -283,7 +283,7 @@ GET http://localhost:8080/health
 ```json
 {
   "card_name": "Иван Иванов",
-  "card_no": "123456",
+  "card_no": "00DF1FD1",
   "user_id": "1001",
   "card_status": 0,
   "card_type": 0,
@@ -299,8 +299,8 @@ GET http://localhost:8080/health
 
 **Параметры:**
 - `card_name` (обязательный) – имя владельца карты (до 32 символов)
-- `card_no` (обязательный) – номер карты (уникальный)
-- `user_id` (обязательный) – идентификатор пользователя (уникальный)
+- `card_no` (обязательный) – номер карты (!!! уникальный !!!)
+- `user_id` (обязательный) – идентификатор пользователя (!!! уникальный !!!)
 - `card_status` (опциональный, по умолчанию 0) – статус карты
 - `card_type` (опциональный, по умолчанию 0) – тип карты
 - `password` (опциональный) – пароль
@@ -321,8 +321,8 @@ GET http://localhost:8080/health
 Ответ зависит от устройства. Пример:
 ```json
 {
-  "result": "OK",
-  "status_code": 200
+    "RecNo": "9",
+    "status_code": 200
 }
 ```
 
@@ -434,16 +434,16 @@ GET http://localhost:8080/health
 
 **Возможные ошибки:** аналогично предыдущим эндпоинтам.
 
-## 13. Удаление карты доступа (delete_card)
+## 13. Удаление карты доступа (removeUserCard)
 **Метод:** POST
-**Эндпоинт:** `/api/delete_card`
+**Эндпоинт:** `/api/removeUserCard`
 **Заголовки:**
 - `Content-Type: application/json`
 
 **Тело запроса (JSON):**
 ```json
 {
-  "card_no": "123456"
+  "card_no": "000C3BA7"
 }
 ```
 
@@ -452,7 +452,7 @@ GET http://localhost:8080/health
 
 **Пример запроса в Postman:**
 1. Выберите метод **POST**.
-2. Введите URL: `http://localhost:8080/api/delete_card`
+2. Введите URL: `http://localhost:8080/api/removeUserCard`
 3. На вкладке **Headers** добавьте ключ `Content-Type` со значением `application/json`.
 4. На вкладке **Body** выберите **raw** и тип **JSON**, вставьте JSON из примера выше.
 
@@ -465,7 +465,7 @@ GET http://localhost:8080/health
 }
 ```
 
-**Примечание:** Этот эндпоинт удаляет запись карты доступа, созданную через `enroll_new_user`. Удаление карты не затрагивает веб-пользователей (созданных через `add_user`).
+**Примечание:** Этот эндпоинт удаляет запись карты доступа, созданную через `addNewUserCard`.
 
 ## 14. Получение списка всех карт доступа (getAllUserCards)
 **Метод:** GET
@@ -480,61 +480,85 @@ GET http://localhost:8080/api/getAllUserCards
 **Успешный ответ (200 OK):**
 ```json
 {
+    "success": true,
+    "count": 7,
     "cards": [
         {
-            "UserType": "0"
-        },
-        {
-            "CardName": "test.user6",
-            "CardNo": "000C3BA7",
-            "CardStatus": 0,
+            "UserType": 0,
+            "Handicap": false,
             "CardType": 0,
+            "CardName": "Иванов И.А.",
+            "CardNo": "02908E73",
+            "CardStatus": 0,
             "CitizenIDNo": "",
+            "Doors": [0],
             "DynamicCheckCode": "",
             "FirstEnter": false,
-            "Handicap": false,
             "IsValid": false,
-            "Password": "",
-            "RecNo": 7,
-            "RepeatEnterRouteTimeout": "4294967295",
-            "UseTime": "0",
-            "UserID": 1006,
-            "UserType": "0",
+            "Password": "26441488",
+            "RepeatEnterRouteTimeout": 4294967295,
+            "TimeSections": [255],
+            "UseTime": 200,
+            "UserID": 1,
             "VTOPosition": "",
-            "ValidDateEnd": "",
-            "ValidDateStart": ""
+            "ValidDateStart": "2026-04-27 15:54:08",
+            "ValidDateEnd": "2037-12-31 23:59:59",
+            "RecNo": 1
         },
         {
-            "CardName": "test.user7",
-            "CardNo": "000A6ABA",
-            "CardStatus": 0,
+            "UserType": 0,
+            "Handicap": false,
             "CardType": 0,
+            "CardName": "Петров К.С.",
+            "CardNo": "0087D4B7",
+            "CardStatus": 0,
             "CitizenIDNo": "",
+            "Doors": [0],
             "DynamicCheckCode": "",
             "FirstEnter": false,
-            "Handicap": false,
             "IsValid": false,
             "Password": "",
-            "RecNo": 8,
-            "RepeatEnterRouteTimeout": "4294967295",
-            "UseTime": "0",
-            "UserID": 1007,
-            "UserType": "0",
+            "RepeatEnterRouteTimeout": 4294967295,
+            "TimeSections": [255],
+            "UseTime": 200,
+            "UserID": 2,
             "VTOPosition": "",
+            "ValidDateStart": "2026-04-28 09:39:18",
+            "ValidDateEnd": "2037-12-31 23:59:59",
+            "RecNo": 2
+        },
+        {
+            "UserType": 0,
+            "Handicap": false,
+            "CardType": 0,
+            "CardName": "test.user3",
+            "CardNo": "123456",
+            "CardStatus": 0,
+            "CitizenIDNo": "",
+            "Doors": [1],
+            "DynamicCheckCode": "",
+            "FirstEnter": false,
+            "IsValid": false,
+            "Password": "",
+            "RepeatEnterRouteTimeout": 4294967295,
+            "TimeSections": [1],
+            "UseTime": 0,
+            "UserID": 1001,
+            "VTOPosition": "",
+            "ValidDateStart": "",
             "ValidDateEnd": "",
-            "ValidDateStart": ""
+            "RecNo": 4
         }
-    ],
-    "count": 2,
-    "success": true
+    ]
 }
 ```
 
 **Примечания:**
-- Ответ содержит массив `cards` с информацией о каждой карте доступа.
-- Первый элемент массива может содержать служебные данные (например, `UserType`).
-- Поля `Doors[0]` и `TimeSections[0]` указывают на привязку к дверям и временным сегментам.
-- Поля `ValidDateStart` и `ValidDateEnd` могут быть пустыми для карт без ограничения срока действия.
+- Ответ содержит массив `cards` с полной информацией о каждой карте доступа.
+- Все поля приведены к соответствующим типам: числа (`UserType`, `CardStatus`, `UserID`, `RecNo`, `UseTime`), булевы значения (`Handicap`, `FirstEnter`, `IsValid`), строки (`CardName`, `CardNo`), списки (`Doors`, `TimeSections`).
+- Поля `Doors` и `TimeSections` представлены массивами целых чисел. Если массив отсутствует, поле может отсутствовать в ответе.
+- Поля `ValidDateStart` и `ValidDateEnd` могут быть пустыми строками для карт без ограничения срока действия.
+- Поле `RepeatEnterRouteTimeout` представлено как число (может быть большим, например 4294967295).
 
 ## 15. Добавление новой карты доступа (addNewUserCard)
 **Метод:** POST
