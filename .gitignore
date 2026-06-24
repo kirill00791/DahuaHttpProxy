@@ -48,8 +48,6 @@ Thumbs.db
 logs/
 
 # Project specific
-DahuaHttpProxy/.env
-DahuaHttpProxy/.env.example
 DahuaHttpProxy/POSTMAN_EXAMPLE.md
 DahuaHttpProxy/DahuaHttpProxy.pyproj.user
 

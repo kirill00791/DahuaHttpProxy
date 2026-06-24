@@ -1,13 +1,17 @@
 # Dahua HTTP Proxy
 
-Простой HTTP-прокси-сервер на Flask для доступа к данным устройства контроля доступа Dahua через REST API.
+HTTP-прокси на Flask для работы с несколькими считывателями Dahua (СКУД) через REST API.
 
 ## Функциональность
 
-- Получение записей об открытии дверей (`/api/getOpenDoorRecords`) с фильтрацией по времени и номеру карты.
-- Получение списка всех карт доступа на устройстве (`/api/getAllUserCards`) с информацией о пользователях.
-- Добавление новой карты доступа на устройство (`/api/addNewUserCard`) с указанием параметров доступа.
-- Удаление карты доступа с устройства (`/api/removeUserCard`).
+- Список настроенных считывателей (`GET /api/devices`)
+- Получение записей проходов (`POST /api/devices/{id}/get_open_door_records`)
+- Список карт доступа (`GET /api/devices/{id}/get_user_cards`)
+- Добавление карты (`POST /api/devices/{id}/add_user_card`)
+- Удаление карты (`POST /api/devices/{id}/remove_user_card`)
+- Health check с проверкой доступности устройств (`GET /health`)
+
+Каждый считыватель имеет свой числовой ID (`1`, `2`, `3`, …) и независимую базу карт.
 
 ## Требования
 
@@ -16,67 +20,140 @@
 
 ## Установка
 
-1. Клонируйте репозиторий:
-   ```bash
-   git clone <repository-url>
-   cd DahuaHttpProxy
-   ```
+1. Клонируйте репозиторий и перейдите в каталог проекта.
 
-2. Создайте виртуальное окружение и активируйте его:
+2. Создайте виртуальное окружение и установите зависимости:
    ```bash
    python -m venv venv
-   venv\Scripts\activate  # Windows
-   # или source venv/bin/activate  # Linux/macOS
-   ```
-
-3. Установите зависимости:
-   ```bash
+   venv\Scripts\activate
    pip install -r requirements.txt
    ```
 
-4. Настройте переменные окружения:
-   - Скопируйте `.env.example` в `.env`:
-     ```bash
-     copy .env.example .env  # Windows
-     # или cp .env.example .env  # Linux/macOS
-     ```
-   - Отредактируйте `.env`, указав реальные параметры вашего устройства Dahua.
+3. Настройте переменные окружения — один файл `.env` в **корне** репозитория:
+   ```bash
+   copy .env.example .env
+   ```
+   Отредактируйте `.env`: для каждого считывателя укажите `DAHUA_DEVICE_{id}_URL`, `_USER`, `_PASS`.
+
+### Формат конфигурации устройств
+
+```env
+DAHUA_DEVICE_1_URL=http://192.168.1.130
+DAHUA_DEVICE_1_USER=admin
+DAHUA_DEVICE_1_PASS=your_password
+
+DAHUA_DEVICE_2_URL=http://192.168.1.120
+DAHUA_DEVICE_2_USER=admin
+DAHUA_DEVICE_2_PASS=another_password
+```
+
+Чтобы добавить 3-й считыватель — допишите блок `DAHUA_DEVICE_3_*` и перезапустите сервер.
 
 ## Запуск
 
-### Режим разработки
 ```bash
 python DahuaHttpProxy/DahuaHttpProxy.py
 ```
-Сервер будет доступен по адресу `http://localhost:8080`.
 
-### Продакшен (с использованием Waitress)
-Установите waitress:
+Сервер по умолчанию: `http://localhost:8080`.
+
+### Продакшен (Waitress)
+
 ```bash
 pip install waitress
+waitress-serve --host=0.0.0.0 --port=8080 DahuaHttpProxy.DahuaHttpProxy:app
 ```
-Запустите:
+
+## Docker
+
+Образ собирается из [`Dockerfile`](Dockerfile). Файл `.env` **не попадает** в образ (см. [`.dockerignore`](.dockerignore)) — учётные данные и адреса считывателей передаются при запуске контейнера.
+
+### Сборка
+
 ```bash
-waitress-serve --host=0.0.0.0 --port=8080 DahuaHttpProxy:DahuaHttpProxy:app
+docker build -t dahua-http-proxy .
 ```
 
-## Использование API
+### Запуск
 
-### Health check (проверка работоспособности)
-**Endpoint:** `GET /health`
+Подготовьте `.env` в корне репозитория (см. [`.env.example`](.env.example)) и передайте его в контейнер:
 
-**Ответ (200 OK):**
+```bash
+docker run -d --name dahua-proxy -p 6001:6001 --env-file .env dahua-http-proxy
+```
+
+Сервис будет доступен на `http://localhost:6001` (в образе по умолчанию `FLASK_PORT=6001`).
+
+Проверка:
+
+```bash
+curl http://localhost:6001/health
+curl http://localhost:6001/api/devices
+```
+
+### Остановка и перезапуск
+
+```bash
+docker stop dahua-proxy
+docker rm dahua-proxy
+```
+
+После изменения `.env` (новый считыватель, другой пароль) пересоздайте контейнер с тем же `--env-file` — пересборка образа не нужна.
+
+### Сеть
+
+Контейнер должен иметь доступ к IP считывателей в локальной сети (`192.168.1.x`). Если из контейнера устройства недоступны, а с хоста доступны — проверьте сетевые настройки Docker (на Windows иногда помогает запуск на хосте или настройка маршрутизации в LAN).
+
+### Переменные окружения в контейнере
+
+Минимально необходимы блоки `DAHUA_DEVICE_{id}_URL`, `_USER`, `_PASS` для каждого считывателя. Опционально:
+
+| Переменная | По умолчанию в образе | Описание |
+|------------|----------------------|----------|
+| `FLASK_HOST` | `0.0.0.0` | Адрес привязки |
+| `FLASK_PORT` | `6001` | Порт внутри контейнера |
+| `FLASK_DEBUG` | `False` | Режим отладки Flask |
+
+Пример переопределения порта:
+
+```bash
+docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080 dahua-http-proxy
+```
+
+
+Базовый префикс для операций со считывателем: `/api/devices/{deviceId}/`, где `deviceId` — число из конфига (`1`, `2`, …).
+
+### Список считывателей
+
+**`GET /api/devices`**
+
 ```json
 {
-  "status": "ok",
-  "timestamp": "2026-04-29T06:25:00.123456"
+  "devices": [
+    {"id": "1", "url": "http://192.168.1.130", "username": "admin"},
+    {"id": "2", "url": "http://192.168.1.120", "username": "admin"}
+  ]
 }
 ```
 
-### Получение записей об открытии дверей
-**Endpoint:** `POST /api/getOpenDoorRecords`
+### Health check
 
-**Тело запроса (JSON):**
+**`GET /health`**
+
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-06-24T12:00:00.000000",
+  "devices": {"1": "ok", "2": "unreachable"}
+}
+```
+
+`status` — `ok`, если все устройства доступны; иначе `degraded`.
+
+### Записи проходов
+
+**`POST /api/devices/1/get_open_door_records`**
+
 ```json
 {
   "startTime": "2026-03-01 00:00:00",
@@ -85,116 +162,57 @@ waitress-serve --host=0.0.0.0 --port=8080 DahuaHttpProxy:DahuaHttpProxy:app
 }
 ```
 
-**Параметры:**
-- `startTime`, `endTime` – обязательные, формат `"YYYY-MM-DD HH:MM:SS"`
-- `cardNo` – опциональный, номер карты для фильтрации.
+`startTime`, `endTime` — обязательны; `cardNo` — опционален.
 
-**Ответ:**
-Массив записей в формате, возвращаемом библиотекой `pydahua`.
+### Список карт
 
-### Получение списка всех карт доступа
-**Endpoint:** `GET /api/getAllUserCards`
+**`GET /api/devices/1/get_user_cards`**
 
-**Ответ:**
-JSON-объект с полями:
-- `success` (boolean) – успешность выполнения запроса
-- `count` (integer) – количество карт в ответе
-- `cards` (array) – массив объектов, каждый из которых содержит полную информацию о карте доступа
-
-**Поля карты доступа:**
-- `UserType`, `CardType`, `CardStatus`, `UserID`, `RecNo`, `UseTime` – числовые значения
-- `Handicap`, `FirstEnter`, `IsValid` – булевы значения
-- `CardName`, `CardNo`, `CitizenIDNo`, `DynamicCheckCode`, `Password`, `VTOPosition` – строки
-- `Doors`, `TimeSections` – массивы целых чисел (могут отсутствовать)
-- `ValidDateStart`, `ValidDateEnd` – строки с датами или пустые строки
-- `RepeatEnterRouteTimeout` – большое целое число (например, 4294967295)
-
-Подробный пример ответа с актуальной структурой см. в файле `POSTMAN_EXAMPLE.md`.
-
-### Добавление новой карты доступа
-**Endpoint:** `POST /api/addNewUserCard`
-
-**Тело запроса (JSON):**
 ```json
 {
-    "card_name": "Иван Иванов",
-    "card_no": "02908E73",
-    "user_id": "5",
-    "card_status": 0,
-    "card_type": 0,
-    "password": "",
-    "doors": [1, 2],
-    "time_sections": [1],
-    "vto_position": "",
-    "valid_date_start": "2026-01-01",
-    "valid_date_end": "2026-12-31",
-    "is_valid": true
+  "success": true,
+  "count": 2,
+  "cards": [...]
 }
 ```
 
-**Параметры:**
-- `card_name`, `card_no` (уникальное!), `user_id`(уникальное!) – обязательные поля.
-- `card_no` должен быть 8-значной строкой с 16-ричным HEX номером RFID карты (например, "02908E73").
-- Остальные параметры опциональны.
+### Добавление карты
 
-**Ответ:**
-Зависит от устройства Dahua, обычно `{"RecNo": "5", "status_code": 200}`.
+**`POST /api/devices/1/add_user_card`**
 
-### Удаление карты доступа
-**Endpoint:** `POST /api/removeUserCard`
-
-**Тело запроса (JSON):**
 ```json
 {
-    "card_no": "02908E73",
-    "recno": 5
+  "card_name": "Иван Иванов",
+  "card_no": "02908E73",
+  "user_id": "5",
+  "doors": [1],
+  "time_sections": [1],
+  "valid_date_start": "2026-01-01",
+  "valid_date_end": "2026-12-31",
+  "is_valid": true
 }
 ```
 
-**Параметры:**
-- `card_no` – обязательный параметр.
-- `recno` – опциональный параметр, номер записи в базе данных.
+Обязательные поля: `card_name`, `card_no`, `user_id`.
 
-**Ответ:**
+### Удаление карты
+
+**`POST /api/devices/1/remove_user_card`**
+
 ```json
 {
-    "message": "Card 02908E73 (RecNo=5) deleted successfully",
-    "recno": "5",
-    "success": true
+  "card_no": "02908E73"
 }
 ```
 
-
-## Архитектура и улучшения
-
-Текущая реализация является минимальной и может быть улучшена:
-
-### Выявленные проблемы
-1. **Конфигурация в коде** – учётные данные хранятся прямо в исходном файле.
-2. **Отсутствие обработки ошибок** – нет валидации входных данных, нет обработки сетевых сбоев.
-3. **Нет аутентификации** – API открыт для всех в сети.
-4. **Нет логгирования** – сложно отслеживать операции.
-5. **Использование встроенного сервера Flask** – не подходит для продакшена.
-
-### Рекомендуемые улучшения
-1. **Вынести конфигурацию в переменные окружения** (частично реализовано через `.env.example`, но требуется интеграция в код).
-2. **Добавить обработку ошибок** (базовая реализация уже есть, но можно улучшить детализацию ошибок).
-3. **Добавить валидацию входных данных** с помощью Pydantic.
-4. **Внедрить аутентификацию по токену** (например, JWT) для защиты API.
-5. **Добавить логгирование** (базовое логгирование уже реализовано, можно расширить).
-6. **Создать фабрику приложений Flask** для лучшей структуры.
-7. **Написать тесты** (unit- и интеграционные).
-8. **Контейнеризация** – создать Dockerfile (уже есть базовый Dockerfile).
-9. **Использовать HTTPS** для подключения к устройству Dahua.
+Подробные примеры для Postman — в [`POSTMAN_EXAMPLE.md`](POSTMAN_EXAMPLE.md).
 
 ## Зависимости
 
-Основные зависимости:
-- `Flask` – веб-фреймворк
-- `pydahua` – клиент для API устройств Dahua
-- `python-dotenv` – загрузка переменных окружения (рекомендуется добавить)
-
-Полный список см. в `requirements.txt`.
+- `Flask` — веб-фреймворк
+- `pydahua` — клиент API Dahua
+- `python-dotenv` — загрузка `.env`
+- `requests` — HTTP-запросы к устройству
 
 ## Лицензия
 
