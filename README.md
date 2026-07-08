@@ -38,11 +38,11 @@ HTTP-прокси на Flask для работы с несколькими сч�
 ### Формат конфигурации устройств
 
 ```env
-DAHUA_DEVICE_1_URL=http://192.168.1.130
+DAHUA_DEVICE_1_URL=http://192.168.1.100
 DAHUA_DEVICE_1_USER=admin
 DAHUA_DEVICE_1_PASS=your_password
 
-DAHUA_DEVICE_2_URL=http://192.168.1.120
+DAHUA_DEVICE_2_URL=http://192.168.1.101
 DAHUA_DEVICE_2_USER=admin
 DAHUA_DEVICE_2_PASS=another_password
 ```
@@ -102,7 +102,7 @@ docker rm dahua-proxy
 
 ### Сеть
 
-Контейнер должен иметь доступ к IP считывателей в локальной сети (`192.168.1.x`). Если из контейнера устройства недоступны, а с хоста доступны — проверьте сетевые настройки Docker (на Windows иногда помогает запуск на хосте или настройка маршрутизации в LAN).
+Контейнер должен иметь доступ к IP считывателей в локальной сети. Если из контейнера устройства недоступны, а с хоста доступны — проверьте сетевые настройки Docker (на Windows иногда помогает запуск на хосте или настройка маршрутизации в LAN).
 
 ### Переменные окружения в контейнере
 
@@ -130,8 +130,8 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 ```json
 {
   "devices": [
-    {"id": "1", "url": "http://192.168.1.130", "username": "admin"},
-    {"id": "2", "url": "http://192.168.1.120", "username": "admin"}
+    {"id": "1", "url": "http://192.168.1.100", "username": "admin"},
+    {"id": "2", "url": "http://192.168.1.101", "username": "admin"}
   ]
 }
 ```
@@ -158,7 +158,7 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 {
   "startTime": "2026-03-01 00:00:00",
   "endTime": "2026-03-30 23:59:59",
-  "cardNo": "02908E73"
+  "cardNo": "AABBCCDD"
 }
 ```
 
@@ -182,8 +182,8 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 
 ```json
 {
-  "card_name": "Иван Иванов",
-  "card_no": "02908E73",
+  "card_name": "Test User",
+  "card_no": "AABBCCDD",
   "user_id": "5",
   "doors": [1],
   "time_sections": [1],
@@ -201,11 +201,22 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 
 ```json
 {
-  "card_no": "02908E73"
+  "card_no": "AABBCCDD"
 }
 ```
 
 Подробные примеры для Postman — в [`POSTMAN_EXAMPLE.md`](POSTMAN_EXAMPLE.md).
+
+## Безопасность
+
+Сервис **не имеет аутентификации** — любой, кто может достучаться до порта, может читать и изменять карты доступа на подключённых считывателях.
+
+Рекомендации:
+
+- Запускайте только в доверенной локальной сети или за reverse proxy с аутентификацией (nginx, Traefik и т.п.).
+- Не выставляйте порт в интернет без защиты.
+- `GET /api/devices` возвращает внутренние URL и логины устройств — не публикуйте этот endpoint наружу.
+- Учётные данные считывателей храните только в `.env` (файл в `.gitignore`).
 
 ## Зависимости
 
@@ -216,4 +227,4 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 
 ## Лицензия
 
-MIT
+[MIT](LICENSE)

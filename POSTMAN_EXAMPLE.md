@@ -46,8 +46,8 @@ GET http://localhost:8080/api/devices
 ```json
 {
   "devices": [
-    {"id": "1", "url": "http://192.168.1.130", "username": "admin"},
-    {"id": "2", "url": "http://192.168.1.120", "username": "admin"}
+    {"id": "1", "url": "http://192.168.1.100", "username": "admin"},
+    {"id": "2", "url": "http://192.168.1.101", "username": "admin"}
   ]
 }
 ```
@@ -65,7 +65,7 @@ GET http://localhost:8080/api/devices
 {
   "startTime": "2026-03-01 00:00:00",
   "endTime": "2026-03-30 23:59:59",
-  "cardNo": "0087D4B7"
+  "cardNo": "DEADBEEF"
 }
 ```
 
@@ -90,7 +90,7 @@ POST http://localhost:8080/api/devices/1/get_open_door_records
   "found": "2",
   "records": [
     {
-      "card_no": "0087D4B7",
+      "card_no": "DEADBEEF",
       "create_time": "Tue, 28 Apr 2026 07:51:01 GMT",
       "door": "0",
       "reader_id": "1",
@@ -126,8 +126,8 @@ GET http://localhost:8080/api/devices/1/get_user_cards
   "count": 2,
   "cards": [
     {
-      "CardName": "Иванов И.А.",
-      "CardNo": "02908E73",
+      "CardName": "Test User",
+      "CardNo": "AABBCCDD",
       "UserID": 1,
       "RecNo": 1,
       "Doors": [0],
@@ -148,8 +148,8 @@ GET http://localhost:8080/api/devices/1/get_user_cards
 **Тело:**
 ```json
 {
-  "card_name": "Иван Иванов",
-  "card_no": "02908E73",
+  "card_name": "Test User",
+  "card_no": "AABBCCDD",
   "user_id": "1001",
   "card_status": 0,
   "card_type": 0,
@@ -170,7 +170,7 @@ POST http://localhost:8080/api/devices/1/add_user_card
 
 Обязательные поля: `card_name`, `card_no`, `user_id`.
 
-`card_no` — 8-символьный HEX RFID (например `02908E73`).
+`card_no` — 8-символьный HEX RFID (например `AABBCCDD`).
 
 **Успешный ответ (200):**
 ```json
@@ -191,7 +191,7 @@ POST http://localhost:8080/api/devices/1/add_user_card
 **Тело:**
 ```json
 {
-  "card_no": "02908E73"
+  "card_no": "AABBCCDD"
 }
 ```
 
@@ -204,7 +204,7 @@ POST http://localhost:8080/api/devices/1/remove_user_card
 ```json
 {
   "success": true,
-  "message": "Card 02908E73 (RecNo=5) deleted successfully",
+  "message": "Card AABBCCDD (RecNo=5) deleted successfully",
   "recno": "5"
 }
 ```
@@ -260,7 +260,7 @@ POST http://localhost:8080/api/devices/1/remove_user_card
         "header": [{"key": "Content-Type", "value": "application/json"}],
         "body": {
           "mode": "raw",
-          "raw": "{\"card_name\": \"Test User\", \"card_no\": \"02908E73\", \"user_id\": \"1001\"}"
+          "raw": "{\"card_name\": \"Test User\", \"card_no\": \"AABBCCDD\", \"user_id\": \"1001\"}"
         },
         "url": "http://localhost:8080/api/devices/1/add_user_card"
       }
@@ -272,7 +272,7 @@ POST http://localhost:8080/api/devices/1/remove_user_card
         "header": [{"key": "Content-Type", "value": "application/json"}],
         "body": {
           "mode": "raw",
-          "raw": "{\"card_no\": \"02908E73\"}"
+          "raw": "{\"card_no\": \"AABBCCDD\"}"
         },
         "url": "http://localhost:8080/api/devices/1/remove_user_card"
       }
