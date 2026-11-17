@@ -111,7 +111,51 @@ POST http://localhost:8080/api/devices/1/get_open_door_records
 
 ---
 
-## 4. Список карт доступа
+## 4. Открытие / закрытие замка
+
+**POST** `/api/devices/{deviceId}/open_door`
+
+**POST** `/api/devices/{deviceId}/close_door`
+
+**Заголовки:** `Content-Type: application/json` (если передаёте тело)
+
+**Тело (опционально):**
+```json
+{
+  "channel": 1,
+  "user_id": "101"
+}
+```
+
+**Пример:**
+```
+POST http://localhost:8080/api/devices/1/open_door
+POST http://localhost:8080/api/devices/1/close_door
+```
+
+`channel` по умолчанию `1`. `user_id` опционален.
+
+**Успешный ответ (200):**
+```json
+{
+  "success": true,
+  "action": "openDoor",
+  "channel": 1,
+  "device_response": "OK"
+}
+```
+
+**Ошибки:**
+
+| Код | Причина |
+|-----|---------|
+| 400 | Неверный JSON или `channel` |
+| 404 | Неизвестный `deviceId` |
+| 500 | Ошибка связи с устройством Dahua |
+
+---
+
+## 5. Список карт доступа
 
 **GET** `/api/devices/{deviceId}/get_user_cards`
 
@@ -139,7 +183,7 @@ GET http://localhost:8080/api/devices/1/get_user_cards
 
 ---
 
-## 5. Добавление карты
+## 6. Добавление карты
 
 **POST** `/api/devices/{deviceId}/add_user_card`
 
@@ -172,6 +216,8 @@ POST http://localhost:8080/api/devices/1/add_user_card
 
 `card_no` — 8-символьный HEX RFID (например `AABBCCDD`).
 
+Для прохода по карте нужны `is_valid: true`, `card_status: 0` и `doors` с номером двери — отдельного поля «доверенный» нет.
+
 **Успешный ответ (200):**
 ```json
 {
@@ -182,7 +228,7 @@ POST http://localhost:8080/api/devices/1/add_user_card
 
 ---
 
-## 6. Удаление карты
+## 7. Удаление карты
 
 **POST** `/api/devices/{deviceId}/remove_user_card`
 
@@ -211,7 +257,7 @@ POST http://localhost:8080/api/devices/1/remove_user_card
 
 ---
 
-## 7. Импорт коллекции Postman (минимальный набор)
+## 8. Импорт коллекции Postman (минимальный набор)
 
 ```json
 {
@@ -244,6 +290,30 @@ POST http://localhost:8080/api/devices/1/remove_user_card
           "raw": "{\"startTime\": \"2026-03-01 00:00:00\", \"endTime\": \"2026-03-30 23:59:59\"}"
         },
         "url": "http://localhost:8080/api/devices/1/get_open_door_records"
+      }
+    },
+    {
+      "name": "Open Door (device 1)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"channel\": 1}"
+        },
+        "url": "http://localhost:8080/api/devices/1/open_door"
+      }
+    },
+    {
+      "name": "Close Door (device 1)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"channel\": 1}"
+        },
+        "url": "http://localhost:8080/api/devices/1/close_door"
       }
     },
     {

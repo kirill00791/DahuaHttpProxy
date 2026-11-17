@@ -225,6 +225,121 @@ def get_open_door_records(device_id: str):
         return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
 
 
+def _door_control(device_id: str, action: str, channel: int, user_id=None):
+    """Remote open/close door via Dahua accessControl.cgi."""
+    dahua = get_dahua_client(device_id)
+    auth = get_device_auth(device_id)
+    url = f'{dahua.base_url}accessControl.cgi'
+    params = {
+        'action': action,
+        'channel': channel,
+        'Type': 'Remote',
+    }
+    if user_id is not None and str(user_id).strip() != '':
+        params['UserID'] = user_id
+
+    logger.info(
+        '%s(device=%s, channel=%s, user_id=%s)',
+        action, device_id, channel, user_id,
+    )
+    response = requests.get(url, params=params, auth=auth, timeout=10)
+    body = (response.text or '').strip()
+    logger.info(
+        '%s(device=%s): status=%s, body=%s',
+        action, device_id, response.status_code, body,
+    )
+    return response.status_code, body
+
+
+def _parse_door_control_request(device_id: str):
+    if device_id not in DEVICES:
+        return None, device_not_found_response(device_id)
+
+    data = {}
+    if request.data:
+        if not request.is_json:
+            return None, (jsonify({'error': 'Content-Type должен быть application/json'}), 400)
+        data = request.get_json(silent=True)
+        if data is None:
+            return None, (jsonify({'error': 'Пустое или некорректное тело запроса'}), 400)
+
+    channel = data.get('channel', 1)
+    try:
+        channel = int(channel)
+    except (TypeError, ValueError):
+        return None, (jsonify({'error': 'channel должен быть целым числом'}), 400)
+
+    if channel < 1:
+        return None, (jsonify({'error': 'channel должен быть >= 1'}), 400)
+
+    user_id = data.get('user_id')
+    return {'channel': channel, 'user_id': user_id}, None
+
+
+@app.route('/api/devices/<device_id>/open_door', methods=['POST'])
+def open_door(device_id: str):
+    parsed, error_response = _parse_door_control_request(device_id)
+    if error_response is not None:
+        return error_response
+
+    try:
+        status_code, body = _door_control(
+            device_id,
+            action='openDoor',
+            channel=parsed['channel'],
+            user_id=parsed['user_id'],
+        )
+        if status_code == 200 and 'Error' not in body:
+            return jsonify({
+                'success': True,
+                'action': 'openDoor',
+                'channel': parsed['channel'],
+                'device_response': body or 'OK',
+            })
+        return jsonify({
+            'error': 'Open door failed',
+            'details': body,
+            'channel': parsed['channel'],
+        }), 500
+    except KeyError:
+        return device_not_found_response(device_id)
+    except Exception as e:
+        logger.error('open_door(device=%s): %s', device_id, e, exc_info=True)
+        return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
+
+
+@app.route('/api/devices/<device_id>/close_door', methods=['POST'])
+def close_door(device_id: str):
+    parsed, error_response = _parse_door_control_request(device_id)
+    if error_response is not None:
+        return error_response
+
+    try:
+        status_code, body = _door_control(
+            device_id,
+            action='closeDoor',
+            channel=parsed['channel'],
+            user_id=parsed['user_id'],
+        )
+        if status_code == 200 and 'Error' not in body:
+            return jsonify({
+                'success': True,
+                'action': 'closeDoor',
+                'channel': parsed['channel'],
+                'device_response': body or 'OK',
+            })
+        return jsonify({
+            'error': 'Close door failed',
+            'details': body,
+            'channel': parsed['channel'],
+        }), 500
+    except KeyError:
+        return device_not_found_response(device_id)
+    except Exception as e:
+        logger.error('close_door(device=%s): %s', device_id, e, exc_info=True)
+        return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
+
+
 @app.route('/api/devices/<device_id>/add_user_card', methods=['POST'])
 def enroll_new_user(device_id: str):
     if device_id not in DEVICES:
