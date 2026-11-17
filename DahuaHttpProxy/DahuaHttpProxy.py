@@ -3,7 +3,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -156,6 +156,144 @@ def device_error_response(message: str, details=None, status: int = 502, **extra
 
 def device_not_found_response(device_id: str):
     return error_response(f'Unknown deviceId: {device_id}', status=404)
+
+
+def _normalize_dahua_datetime(value: Any, *, end_of_day: bool = False) -> str:
+    """Normalize to Dahua ValidDate* format: yyyyMMdd HHMMSS."""
+    if value is None:
+        return ''
+    text = str(value).strip()
+    if not text:
+        return ''
+
+    formats = (
+        '%Y%m%d %H%M%S',
+        '%Y%m%d%H%M%S',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d',
+        '%Y%m%d',
+    )
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(text, fmt)
+            if fmt in ('%Y-%m-%d', '%Y%m%d'):
+                if end_of_day:
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                else:
+                    dt = dt.replace(hour=0, minute=0, second=0)
+            return dt.strftime('%Y%m%d %H%M%S')
+        except ValueError:
+            continue
+
+    raise ValueError(
+        'Неверный формат даты. Используйте YYYY-MM-DD, '
+        'YYYY-MM-DD HH:MM:SS или yyyyMMdd HHMMSS'
+    )
+
+
+def _parse_cgi_kv_body(body: str) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    for raw_line in (body or '').replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        line = raw_line.strip()
+        if not line or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        result[key.strip()] = value.strip()
+    return result
+
+
+def _append_array_params(params: Dict[str, Any], name: str, values: Optional[List[Any]]) -> None:
+    if values is None:
+        return
+    for index, value in enumerate(values):
+        params[f'{name}[{index}]'] = value
+
+
+def _card_fields_from_payload(
+    data: Dict[str, Any],
+    *,
+    include_identity: bool = False,
+) -> Tuple[Dict[str, Any], Optional[Any]]:
+    """Build AccessControlCard CGI fields from JSON. Returns (params, error_response)."""
+    params: Dict[str, Any] = {}
+
+    if include_identity:
+        params['CardName'] = data['card_name']
+        params['CardNo'] = data['card_no']
+        params['UserID'] = data['user_id']
+
+    optional_scalars = {
+        'card_name': 'CardName',
+        'card_status': 'CardStatus',
+        'card_type': 'CardType',
+        'password': 'Password',
+        'vto_position': 'VTOPosition',
+        'user_type': 'UserType',
+        'use_time': 'UseTime',
+    }
+    for src, dst in optional_scalars.items():
+        if src in data and data[src] is not None:
+            params[dst] = data[src]
+
+    if 'is_valid' in data and data['is_valid'] is not None:
+        params['IsValid'] = 'true' if bool(data['is_valid']) else 'false'
+
+    if 'first_enter' in data and data['first_enter'] is not None:
+        params['FirstEnter'] = 'true' if bool(data['first_enter']) else 'false'
+
+    if 'doors' in data:
+        _append_array_params(params, 'Doors', data.get('doors'))
+    if 'time_sections' in data:
+        _append_array_params(params, 'TimeSections', data.get('time_sections'))
+
+    try:
+        if 'valid_date_start' in data and data['valid_date_start'] not in (None, ''):
+            params['ValidDateStart'] = _normalize_dahua_datetime(
+                data['valid_date_start'],
+                end_of_day=False,
+            )
+        if 'valid_date_end' in data and data['valid_date_end'] not in (None, ''):
+            params['ValidDateEnd'] = _normalize_dahua_datetime(
+                data['valid_date_end'],
+                end_of_day=True,
+            )
+    except ValueError as e:
+        return {}, error_response(str(e), status=400)
+
+    return params, None
+
+
+def find_card_recno(device_id: str, card_no: str) -> Optional[str]:
+    dahua = get_dahua_client(device_id)
+    auth = get_device_auth(device_id)
+    response = requests.get(
+        f'{dahua.base_url}recordFinder.cgi',
+        params={
+            'action': 'find',
+            'name': 'AccessControlCard',
+            'CardNo': card_no,
+        },
+        auth=auth,
+        timeout=10,
+    )
+    if response.status_code != 200:
+        raise DahuaDeviceResponseError('Search failed', details=response.text)
+
+    if not _is_record_finder_response(response.text):
+        raise DahuaDeviceResponseError(
+            'Некорректный ответ считывателя при поиске карты',
+            details=response.text[:500],
+        )
+
+    # Match the parsed record. RecNo is often emitted before CardNo, so a
+    # "CardNo ... next RecNo" regex can bind the following card.
+    card_no_norm = str(card_no).strip().upper()
+    for card in parse_card_records(response.text):
+        if str(card.get('CardNo', '')).strip().upper() != card_no_norm:
+            continue
+        recno = card.get('RecNo')
+        return str(recno) if recno is not None else None
+    return None
 
 
 def check_device_reachable(device: DeviceConfig) -> str:
@@ -425,6 +563,134 @@ def close_door(device_id: str):
         )
 
 
+def _parse_channel_query(device_id: str):
+    if device_id not in DEVICES:
+        return None, device_not_found_response(device_id)
+
+    channel = request.args.get('channel', 1)
+    try:
+        channel = int(channel)
+    except (TypeError, ValueError):
+        return None, error_response('channel должен быть целым числом', status=400)
+    if channel < 1:
+        return None, error_response('channel должен быть >= 1', status=400)
+    return channel, None
+
+
+def _get_access_control_status(device_id: str, action: str, channel: int):
+    dahua = get_dahua_client(device_id)
+    auth = get_device_auth(device_id)
+    response = requests.get(
+        f'{dahua.base_url}accessControl.cgi',
+        params={'action': action, 'channel': channel},
+        auth=auth,
+        timeout=10,
+    )
+    body = (response.text or '').strip()
+    logger.info(
+        '%s(device=%s, channel=%s): status=%s, body=%s',
+        action, device_id, channel, response.status_code, body,
+    )
+    return response.status_code, body
+
+
+@app.route('/api/devices/<device_id>/get_door_status', methods=['GET'])
+def get_door_status(device_id: str):
+    channel, parse_error = _parse_channel_query(device_id)
+    if parse_error is not None:
+        return parse_error
+
+    try:
+        status_code, body = _get_access_control_status(device_id, 'getDoorStatus', channel)
+        if status_code != 200 or 'Error' in body:
+            return device_error_response(
+                'Get door status failed',
+                details=body,
+                status=502,
+                channel=channel,
+            )
+        parsed = _parse_cgi_kv_body(body)
+        return jsonify({
+            'success': True,
+            'action': 'getDoorStatus',
+            'channel': channel,
+            'status': parsed.get('Info.status') or parsed.get('status'),
+            'raw': parsed or {'result': body},
+        })
+    except KeyError:
+        return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('get_door_status(device=%s): timeout: %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('get_door_status(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
+    except Exception as e:
+        logger.error('get_door_status(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
+
+
+@app.route('/api/devices/<device_id>/get_lock_status', methods=['GET'])
+def get_lock_status(device_id: str):
+    channel, parse_error = _parse_channel_query(device_id)
+    if parse_error is not None:
+        return parse_error
+
+    try:
+        status_code, body = _get_access_control_status(device_id, 'getLockStatus', channel)
+        if status_code != 200 or 'Error' in body:
+            return device_error_response(
+                'Get lock status failed',
+                details=body,
+                status=502,
+                channel=channel,
+            )
+        parsed = _parse_cgi_kv_body(body)
+        return jsonify({
+            'success': True,
+            'action': 'getLockStatus',
+            'channel': channel,
+            'status': parsed.get('status'),
+            'online_status': parsed.get('onLineStatus') or parsed.get('onlineStatus'),
+            'raw': parsed or {'result': body},
+        })
+    except KeyError:
+        return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('get_lock_status(device=%s): timeout: %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('get_lock_status(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
+    except Exception as e:
+        logger.error('get_lock_status(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
+
+
 @app.route('/api/devices/<device_id>/add_user_card', methods=['POST'])
 def enroll_new_user(device_id: str):
     if device_id not in DEVICES:
@@ -445,22 +711,63 @@ def enroll_new_user(device_id: str):
             logger.warning('Отсутствует поле %s (device %s)', field, device_id)
             return error_response(f'Отсутствует обязательное поле: {field}', status=400)
 
+    # Defaults for insert (optional fields stay optional for callers)
+    payload = {
+        'card_name': data['card_name'],
+        'card_no': data['card_no'],
+        'user_id': data['user_id'],
+        'card_status': data.get('card_status', 0),
+        'card_type': data.get('card_type', 0),
+        'is_valid': data.get('is_valid', True),
+    }
+    for key in (
+        'password',
+        'doors',
+        'time_sections',
+        'vto_position',
+        'valid_date_start',
+        'valid_date_end',
+        'user_type',
+        'first_enter',
+        'use_time',
+    ):
+        if key in data:
+            payload[key] = data[key]
+
+    card_params, field_error = _card_fields_from_payload(payload, include_identity=True)
+    if field_error is not None:
+        return field_error
+
     try:
         dahua = get_dahua_client(device_id)
-        result = dahua.enroll_new_user(
-            card_name=data['card_name'],
-            card_no=data['card_no'],
-            user_id=data['user_id'],
-            card_status=data.get('card_status', 0),
-            card_type=data.get('card_type', 0),
-            password=data.get('password', ''),
-            doors=data.get('doors', None),
-            time_sections=data.get('time_sections', None),
-            vto_position=data.get('vto_position', ''),
-            valid_date_start=data.get('valid_date_start', ''),
-            valid_date_end=data.get('valid_date_end', ''),
-            is_valid=data.get('is_valid', True),
+        auth = get_device_auth(device_id)
+        params = {
+            'action': 'insert',
+            'name': 'AccessControlCard',
+            **card_params,
+        }
+        response = requests.get(
+            f'{dahua.base_url}recordUpdater.cgi',
+            params=params,
+            auth=auth,
+            timeout=10,
         )
+        body = (response.text or '').strip()
+        logger.info(
+            'enroll_new_user(device=%s): status=%s, body=%s',
+            device_id, response.status_code, body,
+        )
+        if response.status_code != 200 or 'Error' in body:
+            return device_error_response(
+                'Add user card failed',
+                details=body,
+                status=502,
+            )
+
+        parsed = _parse_cgi_kv_body(body)
+        result = {'status_code': response.status_code, **parsed}
+        if 'RecNo' not in result and body and '=' not in body:
+            result['result'] = body
         logger.info(
             'enroll_new_user(device=%s): зарегистрирован %s',
             device_id, data['card_name'],
@@ -491,6 +798,115 @@ def enroll_new_user(device_id: str):
         )
 
 
+@app.route('/api/devices/<device_id>/update_user_card', methods=['POST'])
+def update_user_card(device_id: str):
+    if device_id not in DEVICES:
+        return device_not_found_response(device_id)
+
+    if not request.is_json:
+        return error_response('Content-Type должен быть application/json', status=400)
+
+    data = request.get_json()
+    if not data:
+        return error_response('Пустое тело запроса', status=400)
+
+    card_no = data.get('card_no')
+    if not card_no:
+        return error_response('card_no is required', status=400)
+
+    update_keys = {
+        'card_name',
+        'card_status',
+        'card_type',
+        'password',
+        'doors',
+        'time_sections',
+        'vto_position',
+        'valid_date_start',
+        'valid_date_end',
+        'is_valid',
+        'user_type',
+        'first_enter',
+        'use_time',
+    }
+    if not any(key in data for key in update_keys):
+        return error_response(
+            'Укажите хотя бы одно поле для обновления '
+            '(card_name, card_status, is_valid, doors, …)',
+            status=400,
+        )
+
+    card_params, field_error = _card_fields_from_payload(data, include_identity=False)
+    if field_error is not None:
+        return field_error
+    if not card_params:
+        return error_response('Нет корректных полей для обновления', status=400)
+
+    try:
+        recno = find_card_recno(device_id, card_no)
+        if not recno:
+            return error_response(f'Card {card_no} not found', status=404)
+
+        dahua = get_dahua_client(device_id)
+        auth = get_device_auth(device_id)
+        params = {
+            'action': 'update',
+            'name': 'AccessControlCard',
+            'recno': recno,
+            **card_params,
+        }
+        response = requests.get(
+            f'{dahua.base_url}recordUpdater.cgi',
+            params=params,
+            auth=auth,
+            timeout=10,
+        )
+        body = (response.text or '').strip()
+        logger.info(
+            'update_user_card(device=%s, card_no=%s, recno=%s): status=%s, body=%s',
+            device_id, card_no, recno, response.status_code, body,
+        )
+        if response.status_code == 200 and 'Error' not in body:
+            return jsonify({
+                'success': True,
+                'message': f'Card {card_no} (RecNo={recno}) updated successfully',
+                'recno': recno,
+                'device_response': body or 'OK',
+            })
+        return device_error_response(
+            'Update failed',
+            details=body,
+            status=502,
+            recno=recno,
+        )
+    except KeyError:
+        return device_not_found_response(device_id)
+    except DahuaDeviceResponseError as e:
+        logger.error('update_user_card(device=%s): %s', device_id, e)
+        return device_error_response(str(e), details=e.details, status=502)
+    except requests.Timeout as e:
+        logger.error('update_user_card(device=%s): timeout: %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('update_user_card(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
+    except Exception as e:
+        logger.error('update_user_card(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
+
+
 @app.route('/api/devices/<device_id>/remove_user_card', methods=['POST'])
 def delete_card(device_id: str):
     if device_id not in DEVICES:
@@ -506,44 +922,16 @@ def delete_card(device_id: str):
         return error_response('card_no is required', status=400)
 
     try:
-        dahua = get_dahua_client(device_id)
-        base_url = dahua.base_url
-        auth = get_device_auth(device_id)
-
-        search_url = f"{base_url}recordFinder.cgi"
-        search_params = {
-            'action': 'find',
-            'name': 'AccessControlCard',
-            'CardNo': card_no,
-        }
-
         logger.info('Ищем карту %s (device %s)', card_no, device_id)
-        search_response = requests.get(
-            search_url,
-            params=search_params,
-            auth=auth,
-            timeout=10,
-        )
-
-        if search_response.status_code != 200:
-            logger.error('Ошибка поиска (device %s): %s', device_id, search_response.text)
-            return device_error_response(
-                'Search failed',
-                details=search_response.text,
-                status=502,
-            )
-
-        pattern = rf'CardNo={re.escape(card_no)}\b.*?RecNo=(\d+)'
-        match = re.search(pattern, search_response.text, re.DOTALL)
-
-        if not match:
+        recno = find_card_recno(device_id, card_no)
+        if not recno:
             logger.warning('Карта %s не найдена (device %s)', card_no, device_id)
             return error_response(f'Card {card_no} not found', status=404)
 
-        recno = match.group(1)
         logger.info('Найден RecNo=%s для карты %s (device %s)', recno, card_no, device_id)
 
-        delete_url = f"{base_url}recordUpdater.cgi"
+        dahua = get_dahua_client(device_id)
+        auth = get_device_auth(device_id)
         delete_params = {
             'action': 'remove',
             'name': 'AccessControlCard',
@@ -552,7 +940,7 @@ def delete_card(device_id: str):
 
         logger.info('Удаляем карту (device %s): %s', device_id, delete_params)
         delete_response = requests.get(
-            delete_url,
+            f'{dahua.base_url}recordUpdater.cgi',
             params=delete_params,
             auth=auth,
             timeout=10,
@@ -581,6 +969,9 @@ def delete_card(device_id: str):
 
     except KeyError:
         return device_not_found_response(device_id)
+    except DahuaDeviceResponseError as e:
+        logger.error('Исключение (device %s): %s', device_id, e, exc_info=True)
+        return device_error_response(str(e), details=e.details, status=502)
     except requests.Timeout as e:
         logger.error('Исключение (device %s): timeout: %s', device_id, e, exc_info=True)
         return device_error_response(
@@ -609,12 +1000,19 @@ def api_get_all_cards(device_id: str):
     if device_id not in DEVICES:
         return device_not_found_response(device_id)
 
+    card_no = request.args.get('card_no') or None
+    user_id = request.args.get('user_id') or None
+
     try:
-        cards = get_user_card_all(device_id)
+        cards = get_user_card_all(device_id, card_no=card_no, user_id=user_id)
         return jsonify({
             'success': True,
             'count': len(cards),
             'cards': cards,
+            'filters': {
+                'card_no': card_no,
+                'user_id': user_id,
+            },
         })
     except requests.Timeout as e:
         logger.error('Ошибка (device %s): timeout: %s', device_id, e)
@@ -642,16 +1040,24 @@ def api_get_all_cards(device_id: str):
         )
 
 
-def get_user_card_all(device_id: str) -> List[Dict]:
+def get_user_card_all(
+    device_id: str,
+    card_no: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> List[Dict]:
     dahua = get_dahua_client(device_id)
     base_url = dahua.base_url
     auth = get_device_auth(device_id)
 
     url = f"{base_url}recordFinder.cgi"
-    params = {
+    params: Dict[str, Any] = {
         'action': 'find',
         'name': 'AccessControlCard',
     }
+    if card_no:
+        params['CardNo'] = card_no
+    if user_id:
+        params['UserID'] = user_id
 
     response = requests.get(url, params=params, auth=auth, timeout=10)
 
@@ -676,7 +1082,25 @@ def get_user_card_all(device_id: str) -> List[Dict]:
         )
 
     cards = parse_card_records(response.text)
-    logger.info('Получено %s карт (device %s)', len(cards), device_id)
+
+    # Client-side filter as a safety net if the device ignores finder conditions.
+    if card_no:
+        card_no_norm = str(card_no).strip().upper()
+        cards = [
+            card for card in cards
+            if str(card.get('CardNo', '')).strip().upper() == card_no_norm
+        ]
+    if user_id is not None and str(user_id).strip() != '':
+        user_id_norm = str(user_id).strip()
+        cards = [
+            card for card in cards
+            if str(card.get('UserID', '')).strip() == user_id_norm
+        ]
+
+    logger.info(
+        'Получено %s карт (device %s, card_no=%s, user_id=%s)',
+        len(cards), device_id, card_no, user_id,
+    )
     return cards
 
 

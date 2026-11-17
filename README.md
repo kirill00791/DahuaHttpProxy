@@ -10,8 +10,10 @@ HTTP-прокси на Flask для работы со считывателями
 - Получение записей проходов (`POST /api/devices/{id}/get_open_door_records`)
 - Удалённое открытие замка (`POST /api/devices/{id}/open_door`)
 - Удалённое закрытие замка (`POST /api/devices/{id}/close_door`)
-- Список карт доступа (`GET /api/devices/{id}/get_user_cards`)
+- Статус двери / замка (`GET /api/devices/{id}/get_door_status`, `GET /api/devices/{id}/get_lock_status`)
+- Список карт доступа (`GET /api/devices/{id}/get_user_cards`, фильтры `card_no` / `user_id`)
 - Добавление карты (`POST /api/devices/{id}/add_user_card`)
+- Обновление карты (`POST /api/devices/{id}/update_user_card`)
 - Удаление карты (`POST /api/devices/{id}/remove_user_card`)
 - Health check с проверкой доступности считывателей (`GET /health`)
 
@@ -185,15 +187,26 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 
 Тело запроса можно опустить — тогда откроется/закроется канал `1`.
 
+### Статус двери / замка
+
+**`GET /api/devices/1/get_door_status?channel=1`**
+
+**`GET /api/devices/1/get_lock_status?channel=1`**
+
+`channel` опционален, по умолчанию `1`.
+
 ### Список карт
 
 **`GET /api/devices/1/get_user_cards`**
+
+Опциональные query-параметры: `card_no`, `user_id`.
 
 ```json
 {
   "success": true,
   "count": 2,
-  "cards": [...]
+  "cards": [...],
+  "filters": {"card_no": null, "user_id": null}
 }
 ```
 
@@ -222,13 +235,34 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
   "time_sections": [1],
   "valid_date_start": "2026-01-01",
   "valid_date_end": "2026-12-31",
-  "is_valid": true
+  "is_valid": true,
+  "user_type": 0,
+  "first_enter": false,
+  "use_time": 0
 }
 ```
 
-Обязательные поля: `card_name`, `card_no`, `user_id`.
+Обязательные поля: `card_name`, `card_no`, `user_id`. Остальное опционально.
+
+Даты `valid_date_*` принимаются как `YYYY-MM-DD`, `YYYY-MM-DD HH:MM:SS` или `yyyyMMdd HHMMSS` и нормализуются в формат устройства. Для даты без времени конец периода = `23:59:59`.
 
 Для прохода по карте отдельного поля «доверенный» нет. Достаточно карты с `is_valid: true`, `card_status: 0` и `doors` с номером нужной двери (например `[1]`). Без `doors` часть прошивок не даёт доступ к замку.
+
+### Обновление карты
+
+**`POST /api/devices/1/update_user_card`**
+
+```json
+{
+  "card_no": "AABBCCDD",
+  "is_valid": false,
+  "card_status": 4,
+  "doors": [1],
+  "valid_date_end": "2026-12-31"
+}
+```
+
+`card_no` обязателен (поиск записи). Остальные поля опциональны — нужно передать хотя бы одно для изменения. Смена самого номера карты — через `remove` + `add`.
 
 ### Удаление карты
 
