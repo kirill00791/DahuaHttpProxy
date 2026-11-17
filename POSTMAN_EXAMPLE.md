@@ -46,8 +46,8 @@ GET http://localhost:8080/api/devices
 ```json
 {
   "devices": [
-    {"id": "1", "url": "http://192.168.1.100", "username": "admin"},
-    {"id": "2", "url": "http://192.168.1.101", "username": "admin"}
+    {"id": "1", "url": "http://192.168.1.100", "username": "your_username"},
+    {"id": "2", "url": "http://192.168.1.101", "username": "your_username"}
   ]
 }
 ```
@@ -107,7 +107,7 @@ POST http://localhost:8080/api/devices/1/get_open_door_records
 |-----|---------|
 | 400 | Нет JSON, пустое тело, неверный формат времени |
 | 404 | Неизвестный `deviceId` |
-| 500 | Ошибка связи с устройством Dahua |
+| 502 / 504 / 500 | Ошибка связи со считывателем Dahua |
 
 ---
 
@@ -151,7 +151,7 @@ POST http://localhost:8080/api/devices/1/close_door
 |-----|---------|
 | 400 | Неверный JSON или `channel` |
 | 404 | Неизвестный `deviceId` |
-| 500 | Ошибка связи с устройством Dahua |
+| 502 / 504 / 500 | Ошибка связи со считывателем Dahua |
 
 ---
 
@@ -180,6 +180,22 @@ GET http://localhost:8080/api/devices/1/get_user_cards
   ]
 }
 ```
+
+**Ошибка связи со считывателем (например 504):**
+```json
+{
+  "success": false,
+  "error": "Таймаут при получении списка карт со считывателя",
+  "details": "HTTPConnectionPool(host='192.168.1.130', port=80): Read timed out. (read timeout=10)"
+}
+```
+
+| Код | Причина |
+|-----|---------|
+| 404 | Неизвестный `deviceId` |
+| 502 | Ошибка связи или некорректный ответ считывателя |
+| 504 | Таймаут |
+| 500 | Внутренняя ошибка прокси |
 
 ---
 

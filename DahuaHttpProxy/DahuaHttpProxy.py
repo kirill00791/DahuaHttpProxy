@@ -134,8 +134,28 @@ def get_device_auth(device_id: str) -> HTTPDigestAuth:
     return HTTPDigestAuth(device.username, device.password)
 
 
+class DahuaDeviceResponseError(Exception):
+    """Считыватель вернул неожиданный или ошибочный ответ."""
+
+    def __init__(self, message: str, details=None):
+        super().__init__(message)
+        self.details = details
+
+
+def error_response(message: str, status: int = 400, details=None, **extra):
+    payload = {'success': False, 'error': message}
+    if details is not None:
+        payload['details'] = details
+    payload.update(extra)
+    return jsonify(payload), status
+
+
+def device_error_response(message: str, details=None, status: int = 502, **extra):
+    return error_response(message, status=status, details=details, **extra)
+
+
 def device_not_found_response(device_id: str):
-    return jsonify({'error': f'Unknown deviceId: {device_id}'}), 404
+    return error_response(f'Unknown deviceId: {device_id}', status=404)
 
 
 def check_device_reachable(device: DeviceConfig) -> str:
@@ -175,25 +195,28 @@ def get_open_door_records(device_id: str):
 
     if not request.is_json:
         logger.warning('Запрос без JSON (device %s)', device_id)
-        return jsonify({'error': 'Content-Type должен быть application/json'}), 400
+        return error_response('Content-Type должен быть application/json', status=400)
 
     data = request.get_json()
     if not data:
         logger.warning('Пустой JSON (device %s)', device_id)
-        return jsonify({'error': 'Пустое тело запроса'}), 400
+        return error_response('Пустое тело запроса', status=400)
 
     required_fields = ['startTime', 'endTime']
     for field in required_fields:
         if field not in data:
             logger.warning('Отсутствует поле %s (device %s)', field, device_id)
-            return jsonify({'error': f'Отсутствует обязательное поле: {field}'}), 400
+            return error_response(f'Отсутствует обязательное поле: {field}', status=400)
 
     try:
         start_time = datetime.strptime(data['startTime'], '%Y-%m-%d %H:%M:%S')
         end_time = datetime.strptime(data['endTime'], '%Y-%m-%d %H:%M:%S')
     except ValueError as e:
         logger.warning('Неверный формат времени (device %s): %s', device_id, e)
-        return jsonify({'error': 'Неверный формат времени. Используйте YYYY-MM-DD HH:MM:SS'}), 400
+        return error_response(
+            'Неверный формат времени. Используйте YYYY-MM-DD HH:MM:SS',
+            status=400,
+        )
 
     card_no = data.get('cardNo', None)
 
@@ -220,9 +243,27 @@ def get_open_door_records(device_id: str):
         return jsonify(logs)
     except KeyError:
         return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('get_control_card_rec(device=%s): timeout: %s', device_id, e)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('get_control_card_rec(device=%s): %s', device_id, e)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
     except Exception as e:
         logger.error('get_control_card_rec(device=%s): %s', device_id, e)
-        return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
 
 
 def _door_control(device_id: str, action: str, channel: int, user_id=None):
@@ -258,19 +299,25 @@ def _parse_door_control_request(device_id: str):
     data = {}
     if request.data:
         if not request.is_json:
-            return None, (jsonify({'error': 'Content-Type должен быть application/json'}), 400)
+            return None, error_response(
+                'Content-Type должен быть application/json',
+                status=400,
+            )
         data = request.get_json(silent=True)
         if data is None:
-            return None, (jsonify({'error': 'Пустое или некорректное тело запроса'}), 400)
+            return None, error_response(
+                'Пустое или некорректное тело запроса',
+                status=400,
+            )
 
     channel = data.get('channel', 1)
     try:
         channel = int(channel)
     except (TypeError, ValueError):
-        return None, (jsonify({'error': 'channel должен быть целым числом'}), 400)
+        return None, error_response('channel должен быть целым числом', status=400)
 
     if channel < 1:
-        return None, (jsonify({'error': 'channel должен быть >= 1'}), 400)
+        return None, error_response('channel должен быть >= 1', status=400)
 
     user_id = data.get('user_id')
     return {'channel': channel, 'user_id': user_id}, None
@@ -278,9 +325,9 @@ def _parse_door_control_request(device_id: str):
 
 @app.route('/api/devices/<device_id>/open_door', methods=['POST'])
 def open_door(device_id: str):
-    parsed, error_response = _parse_door_control_request(device_id)
-    if error_response is not None:
-        return error_response
+    parsed, parse_error = _parse_door_control_request(device_id)
+    if parse_error is not None:
+        return parse_error
 
     try:
         status_code, body = _door_control(
@@ -296,23 +343,42 @@ def open_door(device_id: str):
                 'channel': parsed['channel'],
                 'device_response': body or 'OK',
             })
-        return jsonify({
-            'error': 'Open door failed',
-            'details': body,
-            'channel': parsed['channel'],
-        }), 500
+        return device_error_response(
+            'Open door failed',
+            details=body,
+            status=502,
+            channel=parsed['channel'],
+        )
     except KeyError:
         return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('open_door(device=%s): timeout: %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('open_door(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
     except Exception as e:
         logger.error('open_door(device=%s): %s', device_id, e, exc_info=True)
-        return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
 
 
 @app.route('/api/devices/<device_id>/close_door', methods=['POST'])
 def close_door(device_id: str):
-    parsed, error_response = _parse_door_control_request(device_id)
-    if error_response is not None:
-        return error_response
+    parsed, parse_error = _parse_door_control_request(device_id)
+    if parse_error is not None:
+        return parse_error
 
     try:
         status_code, body = _door_control(
@@ -328,16 +394,35 @@ def close_door(device_id: str):
                 'channel': parsed['channel'],
                 'device_response': body or 'OK',
             })
-        return jsonify({
-            'error': 'Close door failed',
-            'details': body,
-            'channel': parsed['channel'],
-        }), 500
+        return device_error_response(
+            'Close door failed',
+            details=body,
+            status=502,
+            channel=parsed['channel'],
+        )
     except KeyError:
         return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('close_door(device=%s): timeout: %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('close_door(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
     except Exception as e:
         logger.error('close_door(device=%s): %s', device_id, e, exc_info=True)
-        return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
 
 
 @app.route('/api/devices/<device_id>/add_user_card', methods=['POST'])
@@ -347,18 +432,18 @@ def enroll_new_user(device_id: str):
 
     if not request.is_json:
         logger.warning('Запрос без JSON (device %s)', device_id)
-        return jsonify({'error': 'Content-Type должен быть application/json'}), 400
+        return error_response('Content-Type должен быть application/json', status=400)
 
     data = request.get_json()
     if not data:
         logger.warning('Пустой JSON (device %s)', device_id)
-        return jsonify({'error': 'Пустое тело запроса'}), 400
+        return error_response('Пустое тело запроса', status=400)
 
     required_fields = ['card_name', 'card_no', 'user_id']
     for field in required_fields:
         if field not in data:
             logger.warning('Отсутствует поле %s (device %s)', field, device_id)
-            return jsonify({'error': f'Отсутствует обязательное поле: {field}'}), 400
+            return error_response(f'Отсутствует обязательное поле: {field}', status=400)
 
     try:
         dahua = get_dahua_client(device_id)
@@ -383,9 +468,27 @@ def enroll_new_user(device_id: str):
         return jsonify(result)
     except KeyError:
         return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('enroll_new_user(device=%s): timeout: %s', device_id, e)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('enroll_new_user(device=%s): %s', device_id, e)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
     except Exception as e:
         logger.error('enroll_new_user(device=%s): %s', device_id, e)
-        return jsonify({'error': 'Внутренняя ошибка сервера при обращении к устройству Dahua'}), 500
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
 
 
 @app.route('/api/devices/<device_id>/remove_user_card', methods=['POST'])
@@ -394,13 +497,13 @@ def delete_card(device_id: str):
         return device_not_found_response(device_id)
 
     if not request.is_json:
-        return jsonify({'error': 'JSON required'}), 400
+        return error_response('JSON required', status=400)
 
     data = request.get_json()
     card_no = data.get('card_no')
 
     if not card_no:
-        return jsonify({'error': 'card_no is required'}), 400
+        return error_response('card_no is required', status=400)
 
     try:
         dahua = get_dahua_client(device_id)
@@ -424,14 +527,18 @@ def delete_card(device_id: str):
 
         if search_response.status_code != 200:
             logger.error('Ошибка поиска (device %s): %s', device_id, search_response.text)
-            return jsonify({'error': 'Search failed', 'details': search_response.text}), 500
+            return device_error_response(
+                'Search failed',
+                details=search_response.text,
+                status=502,
+            )
 
         pattern = rf'CardNo={re.escape(card_no)}\b.*?RecNo=(\d+)'
         match = re.search(pattern, search_response.text, re.DOTALL)
 
         if not match:
             logger.warning('Карта %s не найдена (device %s)', card_no, device_id)
-            return jsonify({'error': f'Card {card_no} not found'}), 404
+            return error_response(f'Card {card_no} not found', status=404)
 
         recno = match.group(1)
         logger.info('Найден RecNo=%s для карты %s (device %s)', recno, card_no, device_id)
@@ -465,17 +572,36 @@ def delete_card(device_id: str):
             })
 
         logger.error('Ошибка удаления (device %s): %s', device_id, delete_response.text)
-        return jsonify({
-            'error': 'Deletion failed',
-            'details': delete_response.text,
-            'recno': recno,
-        }), 500
+        return device_error_response(
+            'Deletion failed',
+            details=delete_response.text,
+            status=502,
+            recno=recno,
+        )
 
     except KeyError:
         return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('Исключение (device %s): timeout: %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('Исключение (device %s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
     except Exception as e:
         logger.error('Исключение (device %s): %s', device_id, e, exc_info=True)
-        return jsonify({'error': str(e)}), 500
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
 
 
 @app.route('/api/devices/<device_id>/get_user_cards', methods=['GET'])
@@ -490,39 +616,72 @@ def api_get_all_cards(device_id: str):
             'count': len(cards),
             'cards': cards,
         })
+    except requests.Timeout as e:
+        logger.error('Ошибка (device %s): timeout: %s', device_id, e)
+        return device_error_response(
+            'Таймаут при получении списка карт со считывателя',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('Ошибка (device %s): %s', device_id, e)
+        return device_error_response(
+            'Не удалось получить список карт со считывателя',
+            details=str(e),
+            status=502,
+        )
+    except DahuaDeviceResponseError as e:
+        logger.error('Ошибка (device %s): %s', device_id, e)
+        return device_error_response(str(e), details=e.details, status=502)
     except Exception as e:
         logger.error('Ошибка (device %s): %s', device_id, e)
-        return jsonify({'error': str(e)}), 500
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
 
 
 def get_user_card_all(device_id: str) -> List[Dict]:
-    try:
-        dahua = get_dahua_client(device_id)
-        base_url = dahua.base_url
-        auth = get_device_auth(device_id)
+    dahua = get_dahua_client(device_id)
+    base_url = dahua.base_url
+    auth = get_device_auth(device_id)
 
-        url = f"{base_url}recordFinder.cgi"
-        params = {
-            'action': 'find',
-            'name': 'AccessControlCard',
-        }
+    url = f"{base_url}recordFinder.cgi"
+    params = {
+        'action': 'find',
+        'name': 'AccessControlCard',
+    }
 
-        response = requests.get(url, params=params, auth=auth, timeout=10)
+    response = requests.get(url, params=params, auth=auth, timeout=10)
 
-        if response.status_code != 200:
-            logger.error(
-                'Ошибка получения списка карт (device %s): %s',
-                device_id, response.text,
-            )
-            return []
+    if response.status_code != 200:
+        logger.error(
+            'Ошибка получения списка карт (device %s): %s',
+            device_id, response.text,
+        )
+        raise DahuaDeviceResponseError(
+            'Не удалось получить список карт со считывателя',
+            details=response.text,
+        )
 
-        cards = parse_card_records(response.text)
-        logger.info('Получено %s карт (device %s)', len(cards), device_id)
-        return cards
+    if not _is_record_finder_response(response.text):
+        logger.error(
+            'Некорректный ответ при получении списка карт (device %s): %s',
+            device_id, response.text[:500],
+        )
+        raise DahuaDeviceResponseError(
+            'Некорректный ответ считывателя при получении списка карт',
+            details=response.text[:500],
+        )
 
-    except Exception as e:
-        logger.error('Исключение в get_user_card_all (device %s): %s', device_id, e)
-        return []
+    cards = parse_card_records(response.text)
+    logger.info('Получено %s карт (device %s)', len(cards), device_id)
+    return cards
+
+
+def _is_record_finder_response(raw_text: str) -> bool:
+    return 'found=' in raw_text or 'records[' in raw_text
 
 
 def parse_card_records(raw_text: str) -> List[Dict]:
