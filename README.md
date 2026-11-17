@@ -8,6 +8,7 @@ HTTP-прокси на Flask для работы со считывателями
 
 - Список настроенных считывателей (`GET /api/devices`)
 - Получение записей проходов (`POST /api/devices/{id}/get_open_door_records`)
+- Журнал событий СКУД (`POST /api/devices/{id}/get_access_events`)
 - Удалённое открытие замка (`POST /api/devices/{id}/open_door`)
 - Удалённое закрытие замка (`POST /api/devices/{id}/close_door`)
 - Статус двери / замка (`GET /api/devices/{id}/get_door_status`, `GET /api/devices/{id}/get_lock_status`)
@@ -169,6 +170,35 @@ docker run -d --name dahua-proxy -p 8080:8080 --env-file .env -e FLASK_PORT=8080
 ```
 
 `startTime`, `endTime` — обязательны; `cardNo` — опционален.
+
+Это узкий журнал карточных проходов (`AccessControlCardRec`). Remote open, кнопка, тревоги двери сюда не входят.
+
+### Журнал событий СКУД
+
+**`POST /api/devices/1/get_access_events`**
+
+Тот же интервал, плюс открытия не картой и тревоги двери. Карточные проходы здесь тоже есть — это не замена `get_open_door_records`, а более широкий журнал. Успешный проход по карте может встретиться в обоих.
+
+```json
+{
+  "startTime": "2026-03-01 00:00:00",
+  "endTime": "2026-03-30 23:59:59",
+  "events": "non_card",
+  "user_id": "101"
+}
+```
+
+| Поле | Обязательно | Смысл |
+|------|-------------|--------|
+| `startTime`, `endTime` | да | `YYYY-MM-DD HH:MM:SS` |
+| `events` | нет, по умолчанию `all` | `all` — всё; `card` — только методы с картой; `non_card` — remote, кнопка, пароль, лицо, отпечаток и тревоги двери |
+| `user_id` | нет | оставить события этого пользователя |
+
+`card` — методы Dahua, где участвует карта (`method` 1 и комбинации карта+пароль/лицо/отпечаток). `is_card: true` в ответе. Remote open (`method` 4) и журнал тревог (`source: "alarm"`, `event_code` вроде `DoorNotClosed`, `BreakIn`) попадают в `non_card`.
+
+За один запрос считыватель отдаёт не больше 1024 записей каждого журнала. Фильтр применяется уже в прокси, после выборки.
+
+Если прошивка не отдаёт тревоги, ответ всё равно `200`: `alarm_status` будет `unavailable`, а открытия из журнала unlock останутся.
 
 ### Открытие / закрытие замка
 

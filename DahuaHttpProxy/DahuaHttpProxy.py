@@ -404,6 +404,249 @@ def get_open_door_records(device_id: str):
         )
 
 
+# Methods that involve an access card (Dahua OpenDoorMethod).
+_CARD_METHODS = {1, 2, 3, 9, 25, 29, 30, 32, 33, 34, 36, 37, 38, 39}
+_METHOD_NAMES = {
+    0: 'password',
+    1: 'card',
+    2: 'card_then_password',
+    3: 'password_then_card',
+    4: 'remote',
+    5: 'button',
+    6: 'fingerprint',
+    12: 'key',
+    15: 'face',
+}
+_EVENT_FILTERS = {'all', 'card', 'non_card'}
+_ACCESS_EVENTS_COUNT = 1024
+
+
+def _format_record_time(value):
+    if value is None or value == '':
+        return None
+    try:
+        return datetime.fromtimestamp(int(value)).strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError, OSError):
+        return str(value)
+
+
+def _as_int(value):
+    if value is None or value == '':
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_card_method(method, card_no) -> bool:
+    parsed = _as_int(method)
+    if parsed is None:
+        return bool(str(card_no or '').strip())
+    return parsed in _CARD_METHODS
+
+
+def _record_finder_find(device_id: str, name: str, start_time: datetime, end_time: datetime):
+    dahua = get_dahua_client(device_id)
+    auth = get_device_auth(device_id)
+    response = requests.get(
+        f'{dahua.base_url}recordFinder.cgi',
+        params={
+            'action': 'find',
+            'name': name,
+            'StartTime': int(start_time.timestamp()),
+            'EndTime': int(end_time.timestamp()),
+            'count': _ACCESS_EVENTS_COUNT,
+        },
+        auth=auth,
+        timeout=10,
+    )
+    body = response.text or ''
+    logger.info(
+        'recordFinder %s (device=%s): status=%s, bytes=%s',
+        name, device_id, response.status_code, len(body),
+    )
+    return response
+
+
+def _normalize_unlock_record(card: Dict) -> Dict:
+    method = _as_int(card.get('Method'))
+    card_no = card.get('CardNo') or ''
+    return {
+        'source': 'unlock',
+        'time': _format_record_time(card.get('CreateTime')),
+        'rec_no': card.get('RecNo'),
+        'type': card.get('Type'),
+        'status': _as_int(card.get('Status')),
+        'method': method,
+        'method_name': _METHOD_NAMES.get(method, 'other' if method is not None else None),
+        'is_card': _is_card_method(method, card_no),
+        'card_no': card_no or None,
+        'card_name': card.get('CardName'),
+        'user_id': card.get('UserID'),
+        'door': _as_int(card.get('Door')),
+        'reader_id': card.get('ReaderID'),
+        'error_code': _as_int(card.get('ErrorCode')),
+        'event_code': None,
+    }
+
+
+def _normalize_alarm_record(card: Dict) -> Dict:
+    event_code = card.get('EventCode')
+    return {
+        'source': 'alarm',
+        'time': card.get('Time') or _format_record_time(card.get('CreateTime')),
+        'rec_no': card.get('RecNo'),
+        'type': None,
+        'status': None,
+        'method': None,
+        'method_name': None,
+        'is_card': False,
+        'card_no': None,
+        'card_name': None,
+        'user_id': card.get('UserID'),
+        'door': _as_int(card.get('IndexNum') if card.get('IndexNum') is not None else card.get('DevAddrs')),
+        'reader_id': None,
+        'error_code': None,
+        'event_code': event_code,
+    }
+
+
+@app.route('/api/devices/<device_id>/get_access_events', methods=['POST'])
+def get_access_events(device_id: str):
+    """Unlock journal plus door alarms. Filter events=all|card|non_card."""
+    if device_id not in DEVICES:
+        return device_not_found_response(device_id)
+
+    if not request.is_json:
+        return error_response('Content-Type должен быть application/json', status=400)
+
+    data = request.get_json()
+    if not data:
+        return error_response('Пустое тело запроса', status=400)
+
+    for field in ('startTime', 'endTime'):
+        if field not in data:
+            return error_response(f'Отсутствует обязательное поле: {field}', status=400)
+
+    try:
+        start_time = datetime.strptime(data['startTime'], '%Y-%m-%d %H:%M:%S')
+        end_time = datetime.strptime(data['endTime'], '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return error_response(
+            'Неверный формат времени. Используйте YYYY-MM-DD HH:MM:SS',
+            status=400,
+        )
+
+    events_filter = str(data.get('events', 'all') or 'all').strip().lower()
+    if events_filter not in _EVENT_FILTERS:
+        return error_response(
+            'events должен быть all, card или non_card',
+            status=400,
+        )
+
+    user_id = data.get('user_id')
+    user_id_norm = str(user_id).strip() if user_id not in (None, '') else None
+
+    try:
+        unlock_response = _record_finder_find(
+            device_id, 'AccessControlCardRec', start_time, end_time,
+        )
+        if unlock_response.status_code != 200 or not _is_record_finder_response(unlock_response.text):
+            return device_error_response(
+                'Не удалось получить журнал открытий со считывателя',
+                details=(unlock_response.text or '')[:500],
+                status=502,
+            )
+
+        records = [
+            _normalize_unlock_record(card)
+            for card in parse_card_records(unlock_response.text)
+        ]
+        unlock_found = None
+        for line in (unlock_response.text or '').splitlines():
+            if line.startswith('found='):
+                unlock_found = line.split('=', 1)[1].strip()
+                break
+
+        alarm_status = 'ok'
+        alarm_found = None
+        try:
+            alarm_response = _record_finder_find(
+                device_id, 'AccessControlAlarmRecord', start_time, end_time,
+            )
+            if (
+                alarm_response.status_code == 200
+                and _is_record_finder_response(alarm_response.text)
+                and 'Error' not in alarm_response.text
+            ):
+                records.extend(
+                    _normalize_alarm_record(card)
+                    for card in parse_card_records(alarm_response.text)
+                )
+                for line in alarm_response.text.splitlines():
+                    if line.startswith('found='):
+                        alarm_found = line.split('=', 1)[1].strip()
+                        break
+            else:
+                alarm_status = 'unavailable'
+                logger.warning(
+                    'AccessControlAlarmRecord недоступен (device=%s): %s',
+                    device_id, (alarm_response.text or '')[:300],
+                )
+        except requests.RequestException as e:
+            alarm_status = 'unavailable'
+            logger.warning(
+                'AccessControlAlarmRecord недоступен (device=%s): %s',
+                device_id, e,
+            )
+
+        if user_id_norm is not None:
+            records = [
+                record for record in records
+                if str(record.get('user_id') or '').strip() == user_id_norm
+            ]
+        if events_filter == 'card':
+            records = [record for record in records if record['is_card']]
+        elif events_filter == 'non_card':
+            records = [record for record in records if not record['is_card']]
+
+        records.sort(key=lambda record: record.get('time') or '')
+
+        return jsonify({
+            'success': True,
+            'count': len(records),
+            'events': events_filter,
+            'unlock_found': unlock_found,
+            'alarm_found': alarm_found,
+            'alarm_status': alarm_status,
+            'records': records,
+        })
+    except KeyError:
+        return device_not_found_response(device_id)
+    except requests.Timeout as e:
+        logger.error('get_access_events(device=%s): timeout: %s', device_id, e)
+        return device_error_response(
+            'Таймаут при обращении к считывателю Dahua',
+            details=str(e),
+            status=504,
+        )
+    except requests.RequestException as e:
+        logger.error('get_access_events(device=%s): %s', device_id, e)
+        return device_error_response(
+            'Не удалось связаться со считывателем Dahua',
+            details=str(e),
+            status=502,
+        )
+    except Exception as e:
+        logger.error('get_access_events(device=%s): %s', device_id, e, exc_info=True)
+        return device_error_response(
+            'Внутренняя ошибка сервера при обращении к считывателю Dahua',
+            details=str(e),
+            status=500,
+        )
+
+
 def _door_control(device_id: str, action: str, channel: int, user_id=None):
     """Remote open/close door via Dahua accessControl.cgi."""
     dahua = get_dahua_client(device_id)

@@ -109,6 +109,114 @@ POST http://localhost:8080/api/devices/1/get_open_door_records
 | 404 | Неизвестный `deviceId` |
 | 502 / 504 / 500 | Ошибка связи со считывателем Dahua |
 
+Это журнал карточных проходов. Remote open и тревоги двери — в `get_access_events`.
+
+---
+
+## 3.1 Журнал событий СКУД
+
+**POST** `/api/devices/{deviceId}/get_access_events`
+
+**Заголовки:** `Content-Type: application/json`
+
+Шире, чем `get_open_door_records`: открытия любым способом и тревоги двери. Проходы по карте здесь тоже есть. Это не live-поток: снимок за интервал.
+
+**Всё за период:**
+```json
+{
+  "startTime": "2026-03-01 00:00:00",
+  "endTime": "2026-03-30 23:59:59"
+}
+```
+
+**Только не карточные события** (remote, кнопка, пароль, лицо, отпечаток, тревоги):
+```json
+{
+  "startTime": "2026-03-01 00:00:00",
+  "endTime": "2026-03-30 23:59:59",
+  "events": "non_card"
+}
+```
+
+**Только карточные:**
+```json
+{
+  "startTime": "2026-03-01 00:00:00",
+  "endTime": "2026-03-30 23:59:59",
+  "events": "card",
+  "user_id": "101"
+}
+```
+
+`events`: `all` (по умолчанию), `card`, `non_card`. `user_id` опционален.
+
+Карточное событие — метод с участием карты (`is_card: true`, обычно `method: 1`). Remote open обычно `method: 4`, `is_card: false`. Тревоги: `source: "alarm"`, `event_code` (`DoorNotClosed`, `BreakIn`, `RepeatEnter`, `Duress`, `AlarmLocal`, `ChassisIntruded`).
+
+Не больше 1024 записей каждого журнала за запрос. Фильтр режется уже в прокси.
+
+Если тревоги прошивка не отдаёт — `200` и `"alarm_status": "unavailable"`. Журнал открытий при этом на месте.
+
+**Пример:**
+```
+POST http://localhost:8080/api/devices/1/get_access_events
+```
+
+**Успешный ответ (200):**
+```json
+{
+  "success": true,
+  "count": 2,
+  "events": "all",
+  "unlock_found": "2",
+  "alarm_found": "0",
+  "alarm_status": "ok",
+  "records": [
+    {
+      "source": "unlock",
+      "time": "2026-03-01 09:15:00",
+      "rec_no": 12,
+      "type": "Entry",
+      "status": 1,
+      "method": 1,
+      "method_name": "card",
+      "is_card": true,
+      "card_no": "AABBCCDD",
+      "card_name": "Test User",
+      "user_id": 101,
+      "door": 0,
+      "reader_id": "1",
+      "error_code": null,
+      "event_code": null
+    },
+    {
+      "source": "unlock",
+      "time": "2026-03-01 09:20:00",
+      "rec_no": 13,
+      "type": "Entry",
+      "status": 1,
+      "method": 4,
+      "method_name": "remote",
+      "is_card": false,
+      "card_no": null,
+      "card_name": null,
+      "user_id": 101,
+      "door": 0,
+      "reader_id": null,
+      "error_code": null,
+      "event_code": null
+    }
+  ]
+}
+```
+
+**Ошибки:**
+
+| Код | Причина |
+|-----|---------|
+| 400 | Нет JSON, неверное время или `events` не `all` / `card` / `non_card` |
+| 404 | Неизвестный `deviceId` |
+| 502 / 504 / 500 | Журнал открытий недоступен или ошибка связи |
+
 ---
 
 ## 4. Открытие / закрытие замка
@@ -390,6 +498,18 @@ POST http://localhost:8080/api/devices/1/remove_user_card
           "raw": "{\"startTime\": \"2026-03-01 00:00:00\", \"endTime\": \"2026-03-30 23:59:59\"}"
         },
         "url": "http://localhost:8080/api/devices/1/get_open_door_records"
+      }
+    },
+    {
+      "name": "Get Access Events non-card (device 1)",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"startTime\": \"2026-03-01 00:00:00\", \"endTime\": \"2026-03-30 23:59:59\", \"events\": \"non_card\"}"
+        },
+        "url": "http://localhost:8080/api/devices/1/get_access_events"
       }
     },
     {
